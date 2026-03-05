@@ -1,40 +1,90 @@
 import streamlit as st
+import requests
 import os
 import subprocess
-import requests
+import time
 from gtts import gTTS
-import random
+from datetime import datetime
 
 # ==========================================
-# FUNÇÃO PARA IMAGEM GRATUITA (UNSPLASH)
+# CONFIGURAÇÃO DE SEGURANÇA E LIMITES
 # ==========================================
-def buscar_imagem_gratis(query, id_job):
-    """
-    Busca uma imagem gratuita no Unsplash baseada no tema.
-    Isso economiza sua cota de IA para o que realmente importa.
-    """
+# Sua chave fornecida
+FREEPIK_KEY = st.secrets.get("freepik_key", "FPSX615797bc0e15251d88165d9d5ecb3244")
+
+# Limites do Plano Free Access do Freepik
+LIMITE_DIARIO = 75
+LIMITE_MINUTO = 5
+
+# Inicializa contadores na sessão do navegador (Streamlit Session State)
+if 'contagem_dia' not in st.session_state:
+    st.session_state.contagem_dia = 0
+if 'historico_minuto' not in st.session_state:
+    st.session_state.historico_minuto = []
+
+def registrar_uso():
+    """Registra e limpa o histórico de uso para respeitar os limites."""
+    agora = time.time()
+    st.session_state.contagem_dia += 1
+    st.session_state.historico_minuto.append(agora)
+    
+    # Remove registros com mais de 60 segundos
+    st.session_state.historico_minuto = [t for t in st.session_state.historico_minuto if agora - t < 60]
+
+def verificar_limites():
+    """Verifica se o usuário ainda tem cota disponível."""
+    agora = time.time()
+    st.session_state.historico_minuto = [t for t in st.session_state.historico_minuto if agora - t < 60]
+    
+    if st.session_state.contagem_dia >= LIMITE_DIARIO:
+        return False, "Você atingiu o limite de 75 imagens diárias do Freepik."
+    
+    if len(st.session_state.historico_minuto) >= LIMITE_MINUTO:
+        return False, "Limite de 5 imagens por minuto atingido. Aguarde alguns segundos."
+    
+    return True, ""
+
+# ==========================================
+# GERAÇÃO DE IMAGEM (FREEPIK)
+# ==========================================
+def gerar_imagem_freepik(prompt, id_job):
+    pode_gerar, msg = verificar_limites()
+    if not pode_gerar:
+        return f"Erro: {msg}"
+
+    url = "https://api.freepik.com/v1/ai/text-to-image"
+    payload = {
+        "prompt": prompt,
+        "styling": {"style": "photorealistic", "mode": "cinematic"},
+        "size": "portrait" # 9:16 para Shorts/Reels
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "x-freepik-api-key": FREEPIK_KEY
+    }
+
     try:
-        # Usamos a URL de source do Unsplash (Grátis e sem Key para uso simples)
-        url = f"https://source.unsplash.com/featured/1080x1920/?bible,{query.replace(' ', ',')}"
-        response = requests.get(url, timeout=15)
-        
-        path = f"img_{id_job}.jpg"
+        response = requests.post(url, json=payload, headers=headers)
         if response.status_code == 200:
+            registrar_uso()
+            data = response.json()
+            img_url = data['data'][0]['url']
+            img_res = requests.get(img_url)
+            path = f"img_{id_job}.jpg"
             with open(path, "wb") as f:
-                f.write(response.content)
+                f.write(img_res.content)
             return path
-        return None
+        elif response.status_code == 429:
+            return "Erro: Limite de cota excedido na API (429)."
+        else:
+            return f"Erro Freepik: {response.text}"
     except Exception as e:
-        return f"Erro Imagem: {str(e)}"
+        return f"Erro de Conexão: {str(e)}"
 
 # ==========================================
-# FUNÇÃO PARA ÁUDIO (gTTS - ILIMITADO)
+# GERAÇÃO DE ÁUDIO (gTTS)
 # ==========================================
-def gerar_audio_ilimitado(texto, id_job):
-    """
-    Usa o Google TTS padrão (grátis e sem cota de API) 
-    para gerar a narração em português.
-    """
+def gerar_audio(texto, id_job):
     try:
         path = f"audio_{id_job}.mp3"
         tts = gTTS(text=texto, lang='pt', tld='com.br')
@@ -49,12 +99,9 @@ def gerar_audio_ilimitado(texto, id_job):
 def montar_video(img_path, audio_path, out_path):
     try:
         comando = [
-            'ffmpeg', '-y', 
-            '-loop', '1', '-i', img_path,
-            '-i', audio_path,
-            '-c:v', 'libx264', '-tune', 'stillimage',
-            '-c:a', 'aac', '-b:a', '192k',
-            '-pix_fmt', 'yuv420p',
+            'ffmpeg', '-y', '-loop', '1', '-i', img_path,
+            '-i', audio_path, '-c:v', 'libx264', '-tune', 'stillimage',
+            '-c:a', 'aac', '-b:a', '192k', '-pix_fmt', 'yuv420p',
             '-shortest', out_path
         ]
         subprocess.run(comando, capture_output=True, check=True)
@@ -65,36 +112,42 @@ def montar_video(img_path, audio_path, out_path):
 # ==========================================
 # INTERFACE STREAMLIT
 # ==========================================
-st.set_page_config(page_title="Evangelho Video Maker", page_icon="🙏")
-st.title("🎥 Criador de Vídeos (Versão Estável)")
-st.markdown("Esta versão não consome sua cota de IA para imagens e áudio.")
+st.set_page_config(page_title="Evangelho Creator", page_icon="🙏")
+st.title("📖 Produtor de Vídeos Bíblicos")
 
-with st.form("gerador_estavel"):
-    tema_imagem = st.text_input("Tema da Imagem (Ex: Cross, Jesus, Church, Desert)")
-    versiculo = st.text_area("Texto para Narração")
-    botao = st.form_submit_button("Gerar Vídeo Agora")
+# Painel de Controle de Cota na Sidebar
+with st.sidebar:
+    st.header("📊 Uso da API (Free Access)")
+    st.write(f"Imagens hoje: {st.session_state.contagem_dia} / {LIMITE_DIARIO}")
+    st.progress(st.session_state.contagem_dia / LIMITE_DIARIO)
+    st.write(f"No último minuto: {len(st.session_state.historico_minuto)} / {LIMITE_MINUTO}")
+    if st.button("Resetar Contador Local"):
+        st.session_state.contagem_dia = 0
+
+with st.form("main_form"):
+    st.info("Dica: Use prompts em inglês para melhores resultados no Freepik.")
+    prompt = st.text_input("Cena da Imagem (Ex: Jesus preaching on the mountain, 8k, cinematic)")
+    texto = st.text_area("Texto/Versículo para Narração")
+    botao = st.form_submit_button("Gerar Vídeo Completo")
 
 if botao:
-    if not tema_imagem or not versiculo:
-        st.error("Preencha os campos!")
+    if not prompt or not texto:
+        st.error("Preencha todos os campos.")
     else:
-        with st.spinner("⏳ Criando vídeo..."):
-            # 1. Busca imagem em banco gratuito
-            path_img = buscar_imagem_gratis(tema_imagem, "estavel")
+        with st.spinner("⏳ Gerando mídia e respeitando limites da API..."):
+            res_img = gerar_imagem_freepik(prompt, "v1")
+            res_aud = gerar_audio(texto, "v1")
             
-            # 2. Gera áudio via gTTS (Sem erro de 429 ou 400)
-            path_aud = gerar_audio_ilimitado(versiculo, "estavel")
-            
-            if path_img and "Erro" not in path_aud:
-                video_final = "video_estavel.mp4"
-                resultado = montar_video(path_img, path_aud, video_final)
+            if "Erro" not in res_img and "Erro" not in res_aud:
+                video_file = "video_biblico_final.mp4"
+                resultado = montar_video(res_img, res_aud, video_file)
                 
                 if "Erro" not in resultado:
-                    st.success("Vídeo produzido com sucesso!")
-                    st.video(video_final)
-                    with open(video_final, "rb") as f:
-                        st.download_button("📥 Baixar Vídeo", f, "video_biblico.mp4")
+                    st.success("Glória a Deus! Vídeo gerado.")
+                    st.video(video_file)
+                    with open(video_file, "rb") as f:
+                        st.download_button("📥 Baixar Vídeo", f, "evangelho_video.mp4")
                 else:
                     st.error(resultado)
             else:
-                st.error("Falha ao obter recursos básicos.")
+                st.error(f"{res_img} | {res_aud}")
