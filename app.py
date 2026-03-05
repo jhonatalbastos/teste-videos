@@ -8,7 +8,7 @@ from gtts import gTTS
 # ==========================================
 # CONFIGURAÇÃO DE CHAVE
 # ==========================================
-FREEPIK_KEY = st.secrets.get("freepik_key", "FPSX615797bc0e15251d88165d9d5ecb3244")
+
 
 # ==========================================
 # GERAÇÃO DE IMAGEM (FREEPIK)
