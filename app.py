@@ -1,96 +1,47 @@
 import streamlit as st
-import google.generativeai as genai
 import os
 import subprocess
-import time
+import requests
+from gtts import gTTS
+import random
 
 # ==========================================
-# CONFIGURAÇÃO DE SEGURANÇA (SECRETS)
+# FUNÇÃO PARA IMAGEM GRATUITA (UNSPLASH)
 # ==========================================
-try:
-    MINHAS_API_KEYS = st.secrets["api_keys"]
-except Exception:
-    st.error("Erro: Adicione 'api_keys' nos Secrets do Streamlit.")
-    MINHAS_API_KEYS = []
-
-class GerenciadorDeCota:
-    def __init__(self, keys):
-        self.keys = keys
-        self.index = 0
-    def obter_proxima_chave(self):
-        if not self.keys: return None
-        key = self.keys[self.index]
-        self.index = (self.index + 1) % len(self.keys)
-        return key
-
-gerenciador = GerenciadorDeCota(MINHAS_API_KEYS)
-
-# ==========================================
-# GERAÇÃO DE IMAGEM (ROBUSTA)
-# ==========================================
-def gerar_imagem(prompt, id_job):
-    # Tenta em todas as chaves disponíveis
-    for _ in range(len(MINHAS_API_KEYS)):
-        chave = gerenciador.obter_proxima_chave()
-        genai.configure(api_key=chave)
+def buscar_imagem_gratis(query, id_job):
+    """
+    Busca uma imagem gratuita no Unsplash baseada no tema.
+    Isso economiza sua cota de IA para o que realmente importa.
+    """
+    try:
+        # Usamos a URL de source do Unsplash (Grátis e sem Key para uso simples)
+        url = f"https://source.unsplash.com/featured/1080x1920/?bible,{query.replace(' ', ',')}"
+        response = requests.get(url, timeout=15)
         
-        # Tentamos primeiro o modelo dedicado de imagem
-        # Se falhar, o loop tentará a próxima chave automaticamente
-        try:
-            model = genai.GenerativeModel('gemini-2.5-flash-image')
-            response = model.generate_content(prompt)
-            
-            path = f"img_{id_job}.png"
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'inline_data'):
-                    with open(path, "wb") as f:
-                        f.write(part.inline_data.data)
-                    return path
-        except Exception as e:
-            if "429" in str(e):
-                st.warning(f"Chave terminada em ...{chave[-4:]} atingiu limite de imagem. Tentando próxima...")
-                continue 
-            return f"Erro Imagem: {str(e)}"
-            
-    return "Erro: Todas as 5 chaves atingiram o limite de imagens hoje."
-
-# ==========================================
-# GERAÇÃO DE ÁUDIO (CORREÇÃO DE MODALIDADE)
-# ==========================================
-def gerar_audio(texto, id_job):
-    for _ in range(len(MINHAS_API_KEYS)):
-        chave = gerenciador.obter_proxima_chave()
-        genai.configure(api_key=chave)
-        
-        try:
-            # CORREÇÃO: Para o modelo TTS, precisamos definir a configuração de geração
-            # para aceitar a modalidade AUDIO explicitamente.
-            model = genai.GenerativeModel('gemini-2.5-flash-preview-tts')
-            
-            # Chamada de geração configurada para saída de áudio
-            response = model.generate_content(
-                texto,
-                generation_config={"response_mime_type": "audio/mp3"}
-            )
-            
-            path = f"audio_{id_job}.mp3"
-            
-            # Captura os bytes binários da resposta
-            # Nos modelos nativos de 2026, o áudio vem no primeiro part
-            audio_data = response.candidates[0].content.parts[0].inline_data.data
-            
+        path = f"img_{id_job}.jpg"
+        if response.status_code == 200:
             with open(path, "wb") as f:
-                f.write(audio_data)
+                f.write(response.content)
             return path
-            
-        except Exception as e:
-            if "429" in str(e):
-                st.warning(f"Chave terminada em ...{chave[-4:]} atingiu limite de áudio. Tentando próxima...")
-                continue
-            # Se for erro de modalidade 400, tentamos um ajuste no formato da chamada
-            return f"Erro Áudio: {str(e)}"
-            
-    return "Erro: Todas as chaves atingiram o limite de áudio."
+        return None
+    except Exception as e:
+        return f"Erro Imagem: {str(e)}"
+
+# ==========================================
+# FUNÇÃO PARA ÁUDIO (gTTS - ILIMITADO)
+# ==========================================
+def gerar_audio_ilimitado(texto, id_job):
+    """
+    Usa o Google TTS padrão (grátis e sem cota de API) 
+    para gerar a narração em português.
+    """
+    try:
+        path = f"audio_{id_job}.mp3"
+        tts = gTTS(text=texto, lang='pt', tld='com.br')
+        tts.save(path)
+        return path
+    except Exception as e:
+        return f"Erro Áudio: {str(e)}"
 
 # ==========================================
 # MONTAGEM DE VÍDEO (FFMPEG)
@@ -106,45 +57,44 @@ def montar_video(img_path, audio_path, out_path):
             '-pix_fmt', 'yuv420p',
             '-shortest', out_path
         ]
-        # Redireciona logs para não poluir o Streamlit
         subprocess.run(comando, capture_output=True, check=True)
         return out_path
     except Exception as e:
         return f"Erro FFmpeg: {str(e)}"
 
 # ==========================================
-# INTERFACE
+# INTERFACE STREAMLIT
 # ==========================================
-st.set_page_config(page_title="Evangelho AI Pro", page_icon="🙏")
-st.title("🎥 Criador de Conteúdo Cristão")
-st.info("Este app rotaciona 5 chaves API para maximizar seu uso gratuito.")
+st.set_page_config(page_title="Evangelho Video Maker", page_icon="🙏")
+st.title("🎥 Criador de Vídeos (Versão Estável)")
+st.markdown("Esta versão não consome sua cota de IA para imagens e áudio.")
 
-with st.form("meu_gerador"):
-    prompt = st.text_input("Cena da Imagem (Ex: Moises abrindo o Mar Vermelho, cinematico)")
+with st.form("gerador_estavel"):
+    tema_imagem = st.text_input("Tema da Imagem (Ex: Cross, Jesus, Church, Desert)")
     versiculo = st.text_area("Texto para Narração")
-    botao = st.form_submit_button("Gerar Vídeo Completo")
+    botao = st.form_submit_button("Gerar Vídeo Agora")
 
 if botao:
-    if not prompt or not versiculo:
+    if not tema_imagem or not versiculo:
         st.error("Preencha os campos!")
     else:
-        with st.spinner("⏳ Gerando mídia (isso pode levar 30s)..."):
-            # 1. Gera Imagem
-            path_img = gerar_imagem(prompt, "job")
+        with st.spinner("⏳ Criando vídeo..."):
+            # 1. Busca imagem em banco gratuito
+            path_img = buscar_imagem_gratis(tema_imagem, "estavel")
             
-            # 2. Gera Áudio
-            path_aud = gerar_audio(versiculo, "job")
+            # 2. Gera áudio via gTTS (Sem erro de 429 ou 400)
+            path_aud = gerar_audio_ilimitado(versiculo, "estavel")
             
-            if "Erro" not in path_img and "Erro" not in path_aud:
-                video_final = "video_evangelho.mp4"
+            if path_img and "Erro" not in path_aud:
+                video_final = "video_estavel.mp4"
                 resultado = montar_video(path_img, path_aud, video_final)
                 
                 if "Erro" not in resultado:
-                    st.success("Glória a Deus! Vídeo pronto.")
+                    st.success("Vídeo produzido com sucesso!")
                     st.video(video_final)
                     with open(video_final, "rb") as f:
                         st.download_button("📥 Baixar Vídeo", f, "video_biblico.mp4")
                 else:
                     st.error(resultado)
             else:
-                st.error(f"Erro na Produção:\n\nIMAGEM: {path_img}\n\nÁUDIO: {path_aud}")
+                st.error("Falha ao obter recursos básicos.")
